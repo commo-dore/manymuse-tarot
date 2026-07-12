@@ -68,7 +68,7 @@ export default function SettingsPage() {
       <form onSubmit={save} className="mt-8 space-y-4">
         <Field label="API key (keystring)" name="api_key" />
         <Field label="Shared secret" name="shared_secret" />
-        <Field label="Shop ID" name="shop_id" />
+        <Field label="Shop ID (optional — auto-discovered on connect)" name="shop_id" />
         <button className="w-full rounded-xl bg-violet-500 hover:bg-violet-400 py-3 font-medium text-white">
           Save credentials to env vars
         </button>

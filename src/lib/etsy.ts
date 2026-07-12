@@ -5,7 +5,9 @@
 import { db } from "@/lib/supabase";
 
 export function etsyConfigured(): boolean {
-  return !!(process.env.ETSY_API_KEY && process.env.ETSY_SHOP_ID);
+  // Shop ID is auto-discovered at OAuth connect time, so only the
+  // keystring is required up front.
+  return !!process.env.ETSY_API_KEY;
 }
 
 export function etsyEnv() {
@@ -65,7 +67,18 @@ export type EtsyReceipt = {
 export async function fetchOpenReceipts(): Promise<EtsyReceipt[]> {
   const token = await getAccessToken();
   if (!token) throw new Error("Etsy is not connected — complete OAuth first.");
-  const { apiKey, shopId } = etsyEnv();
+  const { apiKey } = etsyEnv();
+  let shopId = etsyEnv().shopId;
+  if (!shopId) {
+    const { data: row } = await db()
+      .from("etsy_tokens")
+      .select("shop_id")
+      .eq("id", 1)
+      .maybeSingle();
+    shopId = row?.shop_id ?? "";
+  }
+  if (!shopId)
+    throw new Error("No Etsy shop ID — reconnect Etsy so it can be discovered.");
   const res = await fetch(
     `https://api.etsy.com/v3/application/shops/${shopId}/receipts?was_shipped=false&limit=50`,
     { headers: { "x-api-key": apiKey, Authorization: `Bearer ${token}` } }

@@ -31,6 +31,22 @@ export async function GET(req: Request) {
       { status: 502 }
     );
 
+  // Discover the shop ID for the connected account (v3 /users/me carries
+  // shop_id), so the operator never has to enter it manually.
+  let shopId: string | null = null;
+  try {
+    const meRes = await fetch("https://api.etsy.com/v3/application/users/me", {
+      headers: {
+        "x-api-key": etsyEnv().apiKey,
+        Authorization: `Bearer ${json.access_token}`,
+      },
+    });
+    const me = await meRes.json();
+    if (me?.shop_id) shopId = String(me.shop_id);
+  } catch {
+    // non-fatal — pull will ask to reconnect if missing
+  }
+
   await db()
     .from("etsy_tokens")
     .upsert({
@@ -39,6 +55,7 @@ export async function GET(req: Request) {
       refresh_token: json.refresh_token,
       expires_at: new Date(Date.now() + (json.expires_in ?? 3600) * 1000).toISOString(),
       updated_at: new Date().toISOString(),
+      shop_id: shopId,
     });
 
   const out = NextResponse.redirect(`${url.origin}/operator/settings?etsy=connected`);
