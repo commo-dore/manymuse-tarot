@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+/* Single fixed theme — the app is intentionally dark/candle-lit in both
+   OS color schemes. Unlayered body styles override Tailwind utilities,
+   so the palette is pinned here rather than via bg-*/text-* on <body>. */
+:root {
+  --background: #131020;
+  --foreground: #e9e4f5;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
