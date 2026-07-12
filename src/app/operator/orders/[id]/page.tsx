@@ -49,6 +49,7 @@ export default async function OrderPage({
         source: order.source ?? "manual",
         etsy_receipt_id: order.etsy_receipt_id,
         etsy_buyer_username: order.etsy_buyer_username,
+        persona_notes: order.persona_notes ?? null,
       }}
       customer={{
         etsy_username: order.customers.etsy_username,

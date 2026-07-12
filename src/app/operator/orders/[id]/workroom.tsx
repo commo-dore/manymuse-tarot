@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { OSHO_ZEN_CARDS } from "@/lib/cards";
@@ -12,11 +12,13 @@ function CardSlot({
   index,
   value,
   disabled,
+  taken,
   onPick,
 }: {
   index: number;
   value: string;
   disabled: boolean;
+  taken: string[]; // cards picked in OTHER slots — a deck has one of each
   onPick: (card: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -24,12 +26,13 @@ function CardSlot({
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return OSHO_ZEN_CARDS;
-    return OSHO_ZEN_CARDS.filter(
+    const pool = OSHO_ZEN_CARDS.filter((c) => !taken.includes(c.name));
+    if (!q) return pool;
+    return pool.filter(
       (c) =>
         c.name.toLowerCase().includes(q) || c.suit.toLowerCase().includes(q)
     );
-  }, [query]);
+  }, [query, taken]);
 
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
@@ -101,6 +104,7 @@ export default function Workroom({
     source: string;
     etsy_receipt_id: string | null;
     etsy_buyer_username: string | null;
+    persona_notes: string | null;
   };
   customer: {
     etsy_username: string;
@@ -126,6 +130,9 @@ export default function Workroom({
     return s;
   });
   const [comments, setComments] = useState("");
+  const [personaNotes, setPersonaNotes] = useState(order.persona_notes ?? "");
+  const [liveText, setLiveText] = useState("");
+  const readingRef = useRef<HTMLDivElement | null>(null);
   const [busy, setBusy] = useState<"" | "generate" | "approve">("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
@@ -159,16 +166,43 @@ export default function Workroom({
       setError(`Pick ${count} card${count > 1 ? "s" : ""} first.`);
       return;
     }
+    if (new Set(pickedCards).size !== pickedCards.length) {
+      setError("The same card can't be drawn twice.");
+      return;
+    }
+    setError("");
     setBusy("generate");
+    setLiveText("");
+    // Jump back up to the reading area and let the text appear live.
+    readingRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     try {
-      await call(`/api/orders/${order.id}/generate`, {
-        cards: pickedCards,
-        comments,
+      const res = await fetch(`/api/orders/${order.id}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cards: pickedCards,
+          comments,
+          persona_notes: personaNotes,
+        }),
       });
+      if (!res.ok || !res.body) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error ?? "Generation failed");
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let acc = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        acc += decoder.decode(value, { stream: true });
+        setLiveText(acc);
+      }
       setComments("");
       router.refresh();
     } catch (e) {
       setError((e as Error).message);
+      setLiveText("");
     } finally {
       setBusy("");
     }
@@ -287,6 +321,7 @@ export default function Workroom({
               index={i}
               value={slots[i]}
               disabled={finalized}
+              taken={slots.filter((v, j) => j !== i && j < count && !!v)}
               onPick={(card) =>
                 setSlots((s) => s.map((v, j) => (j === i ? card : v)))
               }
@@ -295,28 +330,48 @@ export default function Workroom({
         </div>
       </section>
 
-      {latestReading && (
-        <section className="mt-6 rounded-2xl border border-violet-400/25 bg-violet-400/[0.06] p-5">
+      {(latestReading || liveText || busy === "generate") && (
+        <section
+          ref={readingRef}
+          className="mt-6 rounded-2xl border border-violet-400/25 bg-violet-400/[0.06] p-5"
+        >
           <div className="flex items-center justify-between">
             <h2 className="text-sm uppercase tracking-widest text-violet-300/70">
-              Reading — draft v{latestReading.version}
-              {versions > 1 ? ` (${versions} versions)` : ""}
+              {busy === "generate"
+                ? liveText
+                  ? "Reading — writing…"
+                  : "Reading — the earlier cards are being read…"
+                : `Reading — draft v${latestReading?.version ?? 1}${versions > 1 ? ` (${versions} versions)` : ""}`}
             </h2>
-            <button
-              onClick={copyReading}
-              className="text-xs rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10"
-            >
-              {copied ? "Copied ✓" : "Copy for Etsy message"}
-            </button>
+            {busy !== "generate" && latestReading && (
+              <button
+                onClick={copyReading}
+                className="text-xs rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10"
+              >
+                {copied ? "Copied ✓" : "Copy for Etsy message"}
+              </button>
+            )}
           </div>
           <p className="mt-3 whitespace-pre-wrap leading-relaxed font-[family-name:var(--font-serif)] text-lg">
-            {latestReading.content}
+            {busy === "generate" ? liveText || "…" : latestReading?.content}
           </p>
         </section>
       )}
 
       {!finalized && (
         <section className="mt-6 space-y-3">
+          <div>
+            <label className="block text-xs uppercase tracking-widest text-white/40 mb-1.5">
+              Persona / tone adjustments (applies to the next generation)
+            </label>
+            <textarea
+              value={personaNotes}
+              onChange={(e) => setPersonaNotes(e.target.value)}
+              rows={2}
+              placeholder="e.g. Softer tone, shorter sentences, more direct about the hard truth…"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 outline-none focus:border-violet-400/60 placeholder:text-white/25"
+            />
+          </div>
           <textarea
             value={comments}
             onChange={(e) => setComments(e.target.value)}
@@ -332,10 +387,10 @@ export default function Workroom({
               className="flex-1 rounded-xl border border-violet-400/50 py-3 font-medium hover:bg-violet-400/10 disabled:opacity-50"
             >
               {busy === "generate"
-                ? `Writing (${pickedCards.length}-card chain)…`
+                ? "Writing…"
                 : latestReading
-                  ? "Regenerate"
-                  : "Generate reading"}
+                  ? "Regenerate (builds on current draft)"
+                  : `Generate reading (${count}-card)`}
             </button>
             <button
               onClick={approve}
