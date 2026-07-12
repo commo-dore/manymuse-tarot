@@ -16,13 +16,20 @@ type Run = {
   test_id: string;
   model: string;
   output: string;
+  approved: boolean;
   created_at: string;
 };
 
-const MODELS = [
-  { id: "claude-sonnet-5", label: "Sonnet 5 (production)" },
-  { id: "claude-opus-4-8", label: "Opus 4.8" },
-];
+const SONNET = "claude-sonnet-5";
+const OPUS = "claude-opus-4-8";
+const LABEL: Record<string, string> = { [SONNET]: "Sonnet 5", [OPUS]: "Opus 4.8" };
+
+type Pane = { text: string; streaming: boolean; error?: string };
+type TestState = {
+  panes: Record<string, Pane>; // keyed by model
+  pending: string[]; // adjustment prompts since last approve
+  adjustInput: string;
+};
 
 export default function PersonaStudio() {
   const [instructions, setInstructions] = useState("");
@@ -30,12 +37,12 @@ export default function PersonaStudio() {
   const [dirty, setDirty] = useState(false);
   const [tests, setTests] = useState<TestCase[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [live, setLive] = useState<Record<string, string>>({});
-  const [running, setRunning] = useState<string>("");
-  const [model, setModel] = useState(MODELS[0].id);
+  const [state, setState] = useState<Record<string, TestState>>({});
+  const [busyTest, setBusyTest] = useState("");
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Partial<TestCase> | null>(null);
-  const [showHistory, setShowHistory] = useState<string>("");
+  const [prefilling, setPrefilling] = useState(false);
+  const [approveMsg, setApproveMsg] = useState("");
 
   async function load() {
     const [p, t] = await Promise.all([
@@ -51,11 +58,12 @@ export default function PersonaStudio() {
     load();
   }, []);
 
-  async function save() {
+  async function savePersona(text?: string) {
+    const body = { instructions: text ?? instructions };
     const res = await fetch("/api/persona", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instructions }),
+      body: JSON.stringify(body),
     });
     if (res.ok) {
       setDirty(false);
@@ -63,10 +71,23 @@ export default function PersonaStudio() {
     } else setError((await res.json()).error);
   }
 
-  async function run(test: TestCase) {
-    setError("");
-    setRunning(test.id);
-    setLive((l) => ({ ...l, [test.id]: "" }));
+  function patchState(id: string, fn: (s: TestState) => TestState) {
+    setState((all) => {
+      const cur = all[id] ?? { panes: {}, pending: [], adjustInput: "" };
+      return { ...all, [id]: fn(cur) };
+    });
+  }
+
+  async function streamModel(
+    test: TestCase,
+    model: string,
+    adjustments?: string,
+    previousOutput?: string
+  ) {
+    patchState(test.id, (s) => ({
+      ...s,
+      panes: { ...s.panes, [model]: { text: "", streaming: true } },
+    }));
     try {
       const res = await fetch("/api/persona/run", {
         method: "POST",
@@ -74,7 +95,9 @@ export default function PersonaStudio() {
         body: JSON.stringify({
           test_id: test.id,
           model,
-          instructions, // current draft applies immediately, saved or not
+          instructions,
+          adjustments,
+          previous_output: previousOutput,
         }),
       });
       if (!res.ok || !res.body)
@@ -86,15 +109,106 @@ export default function PersonaStudio() {
         const { done, value } = await reader.read();
         if (done) break;
         acc += decoder.decode(value, { stream: true });
-        setLive((l) => ({ ...l, [test.id]: acc }));
+        const snapshot = acc;
+        patchState(test.id, (s) => ({
+          ...s,
+          panes: { ...s.panes, [model]: { text: snapshot, streaming: true } },
+        }));
       }
-      // refresh run history (run was persisted server-side)
-      const t = await fetch("/api/persona/tests").then((r) => r.json());
-      setRuns(t.runs ?? []);
+      patchState(test.id, (s) => ({
+        ...s,
+        panes: { ...s.panes, [model]: { text: acc, streaming: false } },
+      }));
+    } catch (e) {
+      patchState(test.id, (s) => ({
+        ...s,
+        panes: {
+          ...s.panes,
+          [model]: { text: "", streaming: false, error: (e as Error).message },
+        },
+      }));
+    }
+  }
+
+  // Fresh run — both models side by side, in parallel.
+  async function runBoth(test: TestCase) {
+    setError("");
+    setApproveMsg("");
+    setBusyTest(test.id);
+    patchState(test.id, (s) => ({ ...s, pending: [], adjustInput: "" }));
+    await Promise.all([streamModel(test, SONNET), streamModel(test, OPUS)]);
+    setBusyTest("");
+    load();
+  }
+
+  // Adjustment pass — revises each model's own current output.
+  async function regenerateWithAdjustment(test: TestCase) {
+    const st = state[test.id];
+    const adj = st?.adjustInput.trim();
+    if (!adj) {
+      setError("Type an adjustment first.");
+      return;
+    }
+    setError("");
+    setApproveMsg("");
+    setBusyTest(test.id);
+    patchState(test.id, (s) => ({
+      ...s,
+      pending: [...s.pending, adj],
+      adjustInput: "",
+    }));
+    await Promise.all(
+      [SONNET, OPUS].map((m) =>
+        streamModel(test, m, adj, st?.panes[m]?.text || undefined)
+      )
+    );
+    setBusyTest("");
+    load();
+  }
+
+  // Approving a pane folds the adjustment prompts into the persona.
+  async function approve(test: TestCase, model: string) {
+    const pending = state[test.id]?.pending ?? [];
+    const res = await fetch("/api/persona/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ test_id: test.id, model, adjustments: pending }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      setError(json.error);
+      return;
+    }
+    if (json.instructions !== undefined) {
+      setInstructions(json.instructions);
+      setDirty(false);
+      setSavedAt(new Date().toISOString());
+    }
+    patchState(test.id, (s) => ({ ...s, pending: [] }));
+    setApproveMsg(
+      pending.length
+        ? `Approved ${LABEL[model]} — ${pending.length} adjustment prompt${pending.length > 1 ? "s" : ""} added to the persona above.`
+        : `Approved ${LABEL[model]} (no adjustments to add).`
+    );
+    load();
+  }
+
+  // New test case: preload all fields with a generated realistic case.
+  async function openNewTest() {
+    setEditing({ name: "…", customer_name: "…", message: "Generating…", cards: [] });
+    await prefill();
+  }
+  async function prefill() {
+    setPrefilling(true);
+    try {
+      const res = await fetch("/api/persona/tests/generate", { method: "POST" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+      setEditing((e) => ({ ...(e ?? {}), ...json, id: e?.id }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setRunning("");
+      setPrefilling(false);
     }
   }
 
@@ -127,11 +241,11 @@ export default function PersonaStudio() {
     load();
   }
 
-  const runsFor = (id: string) =>
-    runs.filter((r) => r.test_id === id);
+  const latestRun = (testId: string, model: string) =>
+    runs.find((r) => r.test_id === testId && r.model === model);
 
   return (
-    <main className="mx-auto max-w-4xl px-6 py-12">
+    <main className="mx-auto max-w-6xl px-6 py-12">
       <Link href="/operator" className="text-sm text-violet-300/80 hover:text-violet-200">
         ← Back to queue
       </Link>
@@ -139,10 +253,9 @@ export default function PersonaStudio() {
         Persona studio
       </h1>
       <p className="mt-2 text-sm text-white/50">
-        Train Mira&apos;s voice here. Instructions below are layered on top of
-        the base persona for <strong>every</strong> reading. Test runs use
-        exactly what&apos;s in the box right now — you don&apos;t need to save
-        first to see the effect.
+        Standing instructions below apply to every production reading. Test
+        runs use exactly what&apos;s in the box right now. Approving a reading
+        folds the adjustment prompts that shaped it back into the persona.
       </p>
 
       <section className="mt-6">
@@ -153,14 +266,12 @@ export default function PersonaStudio() {
             setDirty(true);
           }}
           rows={7}
-          placeholder={
-            "e.g.\n- Never open two readings the same way\n- Keep readings under 400 words unless it's a 3-card spread\n- Reference the candle/crystals at most once per reading"
-          }
           className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 outline-none focus:border-violet-400/60 placeholder:text-white/25 font-mono text-sm"
+          placeholder={"Approved adjustments accumulate here automatically — or write your own."}
         />
         <div className="mt-2 flex items-center gap-3">
           <button
-            onClick={save}
+            onClick={() => savePersona()}
             disabled={!dirty}
             className="rounded-xl bg-violet-500 hover:bg-violet-400 disabled:opacity-40 px-5 py-2.5 font-medium text-white"
           >
@@ -172,6 +283,8 @@ export default function PersonaStudio() {
             </span>
           )}
         </div>
+        {approveMsg && <p className="mt-2 text-emerald-300 text-sm">{approveMsg}</p>}
+        {error && <p className="mt-2 text-rose-300 text-sm">{error}</p>}
       </section>
 
       <section className="mt-10">
@@ -179,34 +292,19 @@ export default function PersonaStudio() {
           <h2 className="font-[family-name:var(--font-serif)] text-2xl">
             Test cases
           </h2>
-          <div className="flex items-center gap-3">
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="rounded-lg border border-white/10 bg-[#1b1730] px-3 py-2 text-sm outline-none"
-            >
-              {MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={() =>
-                setEditing({ name: "", customer_name: "", message: "", cards: [] })
-              }
-              className="rounded-lg border border-violet-400/50 px-3 py-2 text-sm hover:bg-violet-400/10"
-            >
-              + New test case
-            </button>
-          </div>
+          <button
+            onClick={openNewTest}
+            className="rounded-lg border border-violet-400/50 px-3 py-2 text-sm hover:bg-violet-400/10"
+          >
+            + New test case
+          </button>
         </div>
-        {error && <p className="mt-3 text-rose-300 text-sm">{error}</p>}
 
-        <div className="mt-4 space-y-4">
+        <div className="mt-4 space-y-5">
           {tests.map((t) => {
-            const history = runsFor(t.id);
-            const liveOut = live[t.id];
+            const st = state[t.id];
+            const hasOutput =
+              st && (st.panes[SONNET]?.text || st.panes[OPUS]?.text);
             return (
               <div
                 key={t.id}
@@ -221,11 +319,11 @@ export default function PersonaStudio() {
                   </div>
                   <div className="flex gap-2 text-xs whitespace-nowrap">
                     <button
-                      onClick={() => run(t)}
-                      disabled={running !== ""}
+                      onClick={() => runBoth(t)}
+                      disabled={busyTest !== ""}
                       className="rounded-lg bg-violet-500 hover:bg-violet-400 disabled:opacity-40 px-3 py-1.5 font-medium text-white"
                     >
-                      {running === t.id ? "Reading…" : "▶ Run"}
+                      {busyTest === t.id ? "Reading…" : "▶ Run (both models)"}
                     </button>
                     <button
                       onClick={() => setEditing(t)}
@@ -245,51 +343,72 @@ export default function PersonaStudio() {
                   “{t.message}”
                 </p>
 
-                {(liveOut !== undefined || history.length > 0) && (
-                  <div className="mt-4 rounded-xl border border-violet-400/20 bg-violet-400/[0.05] p-4">
-                    <div className="flex items-center justify-between text-xs text-violet-300/70">
-                      <span>
-                        {running === t.id
-                          ? liveOut
-                            ? "Writing…"
-                            : "Reading earlier cards…"
-                          : liveOut !== undefined
-                            ? `Latest run (${model.includes("opus") ? "Opus 4.8" : "Sonnet 5"})`
-                            : `Latest run (${history[0]?.model.includes("opus") ? "Opus 4.8" : "Sonnet 5"} · ${new Date(history[0]?.created_at).toLocaleString()})`}
-                      </span>
-                      {history.length > 1 && (
-                        <button
-                          onClick={() =>
-                            setShowHistory(showHistory === t.id ? "" : t.id)
-                          }
-                          className="underline underline-offset-2"
+                {hasOutput && (
+                  <div className="mt-4 flex gap-2">
+                    <input
+                      value={st?.adjustInput ?? ""}
+                      onChange={(e) =>
+                        patchState(t.id, (s) => ({
+                          ...s,
+                          adjustInput: e.target.value,
+                        }))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") regenerateWithAdjustment(t);
+                      }}
+                      placeholder="Adjustment for both readings, e.g. 'less mystical language, more practical next steps'…"
+                      className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm outline-none focus:border-violet-400/60 placeholder:text-white/25"
+                    />
+                    <button
+                      onClick={() => regenerateWithAdjustment(t)}
+                      disabled={busyTest !== ""}
+                      className="rounded-xl border border-violet-400/50 px-4 py-2.5 text-sm font-medium hover:bg-violet-400/10 disabled:opacity-40 whitespace-nowrap"
+                    >
+                      Regenerate reading
+                    </button>
+                  </div>
+                )}
+                {(st?.pending.length ?? 0) > 0 && (
+                  <p className="mt-2 text-xs text-amber-300/80">
+                    Pending adjustments (added to persona on approve):{" "}
+                    {st!.pending.map((a) => `“${a}”`).join(" · ")}
+                  </p>
+                )}
+
+                {(hasOutput || busyTest === t.id) && (
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    {[SONNET, OPUS].map((m) => {
+                      const pane = st?.panes[m];
+                      const persisted = latestRun(t.id, m);
+                      const text = pane?.text || (!pane ? persisted?.output : "");
+                      return (
+                        <div
+                          key={m}
+                          className="rounded-xl border border-violet-400/20 bg-violet-400/[0.05] p-4"
                         >
-                          {showHistory === t.id
-                            ? "hide previous runs"
-                            : `compare with ${history.length - (liveOut !== undefined ? 0 : 1)} previous run(s)`}
-                        </button>
-                      )}
-                    </div>
-                    <p className="mt-2 whitespace-pre-wrap leading-relaxed font-[family-name:var(--font-serif)]">
-                      {liveOut !== undefined ? liveOut || "…" : history[0]?.output}
-                    </p>
-                    {showHistory === t.id &&
-                      history
-                        .slice(liveOut !== undefined ? 0 : 1, 4)
-                        .map((r) => (
-                          <div
-                            key={r.id}
-                            className="mt-3 border-t border-white/10 pt-3"
-                          >
-                            <p className="text-xs text-white/40">
-                              {r.model.includes("opus") ? "Opus 4.8" : "Sonnet 5"} ·{" "}
-                              {new Date(r.created_at).toLocaleString()}
-                            </p>
-                            <p className="mt-1 whitespace-pre-wrap leading-relaxed font-[family-name:var(--font-serif)] text-white/70">
-                              {r.output}
-                            </p>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs uppercase tracking-widest text-violet-300/70">
+                              {LABEL[m]}
+                              {pane?.streaming ? " — writing…" : ""}
+                            </span>
+                            {!pane?.streaming && text && (
+                              <button
+                                onClick={() => approve(t, m)}
+                                className="text-xs rounded-lg bg-emerald-500 hover:bg-emerald-400 px-3 py-1 font-medium text-white"
+                              >
+                                ✓ Approve
+                              </button>
+                            )}
                           </div>
-                        ))}
+                          {pane?.error && (
+                            <p className="mt-2 text-rose-300 text-sm">{pane.error}</p>
+                          )}
+                          <p className="mt-2 whitespace-pre-wrap leading-relaxed font-[family-name:var(--font-serif)] text-[0.95rem]">
+                            {text || (pane?.streaming ? "…" : "")}
+                          </p>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -302,14 +421,23 @@ export default function PersonaStudio() {
       {editing && (
         <div className="fixed inset-0 z-20 bg-black/60 flex items-center justify-center p-6">
           <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-[#1b1730] p-6 max-h-[90vh] overflow-y-auto">
-            <h3 className="font-[family-name:var(--font-serif)] text-xl">
-              {editing.id ? "Edit test case" : "New test case"}
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="font-[family-name:var(--font-serif)] text-xl">
+                {editing.id ? "Edit test case" : "New test case"}
+              </h3>
+              <button
+                onClick={prefill}
+                disabled={prefilling}
+                className="rounded-lg border border-violet-400/50 px-3 py-1.5 text-sm hover:bg-violet-400/10 disabled:opacity-50"
+              >
+                {prefilling ? "Generating…" : "⟳ Regenerate all fields"}
+              </button>
+            </div>
             <div className="mt-4 space-y-3">
               <input
                 value={editing.name ?? ""}
                 onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                placeholder="Test name (e.g. Angry repeat customer)"
+                placeholder="Test name"
                 className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 outline-none focus:border-violet-400/60"
               />
               <input
@@ -325,7 +453,7 @@ export default function PersonaStudio() {
                 onChange={(e) =>
                   setEditing({ ...editing, message: e.target.value })
                 }
-                rows={4}
+                rows={5}
                 placeholder="The customer's message"
                 className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 outline-none focus:border-violet-400/60"
               />
