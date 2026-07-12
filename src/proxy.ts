@@ -3,7 +3,6 @@ import { verifySession } from "@/lib/auth";
 
 export const config = {
   matcher: ["/operator/:path*"],
-  runtime: "nodejs", // verifySession uses node crypto HMAC
 };
 
 // Every /operator page (queue, orders, persona studio, settings) requires a
