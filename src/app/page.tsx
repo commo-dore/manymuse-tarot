@@ -73,6 +73,7 @@ export default function IntakePage() {
               name="message"
               required
               rows={7}
+              maxLength={1024}
               placeholder="What's your situation, and what do you want the cards to speak to?"
               className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 outline-none focus:border-violet-400/60 placeholder:text-white/25"
             />

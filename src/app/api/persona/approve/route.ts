@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/supabase";
 import { isOperator } from "@/lib/auth";
 
-// Approving one of the two side-by-side readings folds the adjustment
-// prompts that produced it into the standing persona instructions, so the
-// training compounds across sessions.
+// Approving one of the two side-by-side readings:
+// - stores each adjustment prompt as a row in persona_adjustments (the
+//   editable "database view" tab), so future readings use them
+// - marks the newest run of that test+model approved
+// - marks the test case done
 export async function POST(req: Request) {
   if (!(await isOperator()))
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -15,46 +17,40 @@ export async function POST(req: Request) {
     : [];
   const testId: string = body?.test_id ?? "";
   const model: string = body?.model ?? "";
+  if (!testId || !model)
+    return NextResponse.json({ error: "test_id and model required" }, { status: 400 });
 
   const supabase = db();
 
-  // Mark the newest run of this test+model as approved (best effort).
-  if (testId && model) {
-    const { data: run } = await supabase
-      .from("persona_test_runs")
-      .select("id")
-      .eq("test_id", testId)
-      .eq("model", model)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (run)
-      await supabase
-        .from("persona_test_runs")
-        .update({ approved: true })
-        .eq("id", run.id);
-  }
-
-  if (!adjustments.length) {
-    return NextResponse.json({ ok: true, appended: 0 });
-  }
-
-  const { data: settings } = await supabase
-    .from("persona_settings")
-    .select("instructions")
-    .eq("id", 1)
+  const { data: run } = await supabase
+    .from("persona_test_runs")
+    .select("id")
+    .eq("test_id", testId)
+    .eq("model", model)
+    .order("created_at", { ascending: false })
+    .limit(1)
     .maybeSingle();
-  const current = settings?.instructions ?? "";
-  const additions = adjustments
-    .filter((a) => !current.includes(a))
-    .map((a) => `- ${a}`)
-    .join("\n");
-  const next = additions ? (current ? `${current}\n${additions}` : additions) : current;
+  if (run)
+    await supabase.from("persona_test_runs").update({ approved: true }).eq("id", run.id);
 
-  const { error } = await supabase
-    .from("persona_settings")
-    .upsert({ id: 1, instructions: next, updated_at: new Date().toISOString() });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  await supabase.from("persona_tests").update({ done: true }).eq("id", testId);
 
-  return NextResponse.json({ ok: true, appended: adjustments.length, instructions: next });
+  let appended = 0;
+  if (adjustments.length) {
+    const { data: existing } = await supabase
+      .from("persona_adjustments")
+      .select("text");
+    const seen = new Set((existing ?? []).map((r) => r.text));
+    const fresh = adjustments.filter((a) => !seen.has(a));
+    if (fresh.length) {
+      const { error } = await supabase
+        .from("persona_adjustments")
+        .insert(fresh.map((text) => ({ text })));
+      if (error)
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      appended = fresh.length;
+    }
+  }
+
+  return NextResponse.json({ ok: true, appended, done: true });
 }

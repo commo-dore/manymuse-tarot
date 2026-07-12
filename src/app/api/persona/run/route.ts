@@ -10,6 +10,7 @@ import {
   llmStream,
   READING_MODEL,
 } from "@/lib/reading";
+import { loadGlobalInstructions } from "@/lib/persona-db";
 
 export const maxDuration = 300;
 
@@ -41,17 +42,12 @@ export async function POST(req: Request) {
   if (!test)
     return NextResponse.json({ error: "Test case not found" }, { status: 404 });
 
-  let instructions: string;
-  if (typeof body?.instructions === "string") {
-    instructions = body.instructions;
-  } else {
-    const { data: settings } = await supabase
-      .from("persona_settings")
-      .select("instructions")
-      .eq("id", 1)
-      .maybeSingle();
-    instructions = settings?.instructions ?? "";
-  }
+  // Draft free-text base (if the studio passed one) + the approved
+  // adjustments from the database, which always apply.
+  const instructions = await loadGlobalInstructions(
+    supabase,
+    typeof body?.instructions === "string" ? body.instructions : undefined
+  );
 
   let system: string;
   try {

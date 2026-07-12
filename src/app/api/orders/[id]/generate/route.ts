@@ -11,6 +11,7 @@ import {
   type ReadingInput,
 } from "@/lib/reading";
 import { OSHO_ZEN_CARDS } from "@/lib/cards";
+import { loadGlobalInstructions } from "@/lib/persona-db";
 
 export const maxDuration = 300;
 
@@ -103,15 +104,11 @@ export async function POST(
     personaNotes,
   };
 
-  const { data: settings } = await supabase
-    .from("persona_settings")
-    .select("instructions")
-    .eq("id", 1)
-    .maybeSingle();
+  const globalInstructions = await loadGlobalInstructions(supabase);
 
   let system: string;
   try {
-    system = persona(personaNotes, settings?.instructions ?? "");
+    system = persona(personaNotes, globalInstructions);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }

@@ -12,12 +12,12 @@ export async function GET() {
   const { data: tests } = await supabase
     .from("persona_tests")
     .select("*")
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: false });
   const { data: runs } = await supabase
     .from("persona_test_runs")
     .select("id, test_id, model, output, created_at")
     .order("created_at", { ascending: false })
-    .limit(100);
+    .limit(300);
   return NextResponse.json({ tests: tests ?? [], runs: runs ?? [] });
 }
 
@@ -26,6 +26,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const body = await req.json().catch(() => ({}));
   const cards: string[] = Array.isArray(body?.cards) ? body.cards.filter(Boolean) : [];
+  if (String(body?.message ?? "").length > 1024)
+    return NextResponse.json({ error: "Message is limited to 1024 characters." }, { status: 400 });
   if (!body?.name || !body?.message || cards.length < 1 || cards.length > 3)
     return NextResponse.json(
       { error: "Name, message and 1-3 cards are required." },

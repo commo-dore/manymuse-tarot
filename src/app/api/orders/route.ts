@@ -12,6 +12,12 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
+  if (message.length > 1024) {
+    return NextResponse.json(
+      { error: "Your message is limited to 1024 characters." },
+      { status: 400 }
+    );
+  }
 
   const supabase = db();
   const { data: customer, error: cErr } = await supabase
