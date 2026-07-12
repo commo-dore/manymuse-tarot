@@ -2,7 +2,7 @@
 
 /* Single fixed theme — the app is intentionally dark/candle-lit in both
    OS color schemes. Unlayered body styles override Tailwind utilities,
-   so the palette is pinned here rather than via bg-*/text-* on <body>. */
+   so the palette is pinned here rather than with utility classes on body. */
 :root {
   --background: #131020;
   --foreground: #e9e4f5;
