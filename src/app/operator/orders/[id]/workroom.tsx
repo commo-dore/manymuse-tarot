@@ -7,6 +7,83 @@ import { OSHO_ZEN_CARDS } from "@/lib/cards";
 
 type Reading = { content: string; version: number } | null;
 
+// ---------- per-slot searchable card picker ----------
+function CardSlot({
+  index,
+  value,
+  disabled,
+  onPick,
+}: {
+  index: number;
+  value: string;
+  disabled: boolean;
+  onPick: (card: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return OSHO_ZEN_CARDS;
+    return OSHO_ZEN_CARDS.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) || c.suit.toLowerCase().includes(q)
+    );
+  }, [query]);
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs uppercase tracking-widest text-white/40">
+          Card {index + 1}
+        </span>
+        {value && (
+          <span className="rounded-full bg-violet-400/15 text-violet-300 text-xs px-2.5 py-0.5">
+            {value} ✓
+          </span>
+        )}
+      </div>
+      {!disabled && (
+        <div className="relative mt-2">
+          <input
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            placeholder={value ? "Search to change…" : "Type to search 79 cards…"}
+            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-violet-400/60 placeholder:text-white/25"
+          />
+          {open && query.trim() && (
+            <ul className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-white/10 bg-[#1b1730] shadow-xl">
+              {matches.length === 0 && (
+                <li className="px-3 py-2 text-sm text-white/40">No matches</li>
+              )}
+              {matches.slice(0, 30).map((c) => (
+                <li key={c.name}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onPick(c.name);
+                      setQuery("");
+                      setOpen(false);
+                    }}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-violet-400/10"
+                  >
+                    {c.name}
+                    <span className="ml-2 text-xs text-white/40">{c.suit}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Workroom({
   order,
   customer,
@@ -18,9 +95,12 @@ export default function Workroom({
     id: string;
     status: string;
     placed_at: string;
-    card_name: string | null;
+    cards: string[];
     customer_message: string;
     order_ref: string | null;
+    source: string;
+    etsy_receipt_id: string | null;
+    etsy_buyer_username: string | null;
   };
   customer: {
     etsy_username: string;
@@ -32,13 +112,19 @@ export default function Workroom({
   pastOrders: {
     id: string;
     customer_message: string;
-    card_name: string | null;
+    cards: string[];
     placed_at: string;
     status: string;
   }[];
 }) {
   const router = useRouter();
-  const [card, setCard] = useState(order.card_name ?? "");
+  const initialCards = order.cards ?? [];
+  const [count, setCount] = useState<number>(Math.max(1, initialCards.length));
+  const [slots, setSlots] = useState<string[]>(() => {
+    const s = [...initialCards];
+    while (s.length < 3) s.push("");
+    return s;
+  });
   const [comments, setComments] = useState("");
   const [busy, setBusy] = useState<"" | "generate" | "approve">("");
   const [error, setError] = useState("");
@@ -53,14 +139,8 @@ export default function Workroom({
   const holdUntil = new Date(order.placed_at).getTime() + 30 * 60 * 1000;
   const holdRemaining = Math.max(0, holdUntil - now);
   const finalized = order.status === "approved" || order.status === "sent";
-
-  const suits = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const c of OSHO_ZEN_CARDS) {
-      map.set(c.suit, [...(map.get(c.suit) ?? []), c.name]);
-    }
-    return [...map.entries()];
-  }, []);
+  const pickedCards = slots.slice(0, count).filter(Boolean);
+  const allPicked = pickedCards.length === count;
 
   async function call(path: string, body?: object) {
     setError("");
@@ -75,14 +155,14 @@ export default function Workroom({
   }
 
   async function generate() {
-    if (!card) {
-      setError("Pick the card you drew first.");
+    if (!allPicked) {
+      setError(`Pick ${count} card${count > 1 ? "s" : ""} first.`);
       return;
     }
     setBusy("generate");
     try {
       await call(`/api/orders/${order.id}/generate`, {
-        card_name: card,
+        cards: pickedCards,
         comments,
       });
       setComments("");
@@ -144,7 +224,8 @@ export default function Workroom({
           <ul className="mt-2 space-y-1 text-sm text-white/60">
             {pastOrders.slice(0, 3).map((p) => (
               <li key={p.id}>
-                {new Date(p.placed_at).toLocaleDateString()} — {p.card_name ?? "no card"} — “
+                {new Date(p.placed_at).toLocaleDateString()} —{" "}
+                {p.cards?.join(", ") || "no cards"} — “
                 {p.customer_message.slice(0, 90)}
                 {p.customer_message.length > 90 ? "…" : ""}”
               </li>
@@ -160,29 +241,58 @@ export default function Workroom({
         <p className="mt-2 whitespace-pre-wrap leading-relaxed">
           {order.customer_message}
         </p>
+        {order.source === "etsy" && (
+          <div className="mt-4 rounded-lg border border-teal-400/25 bg-teal-400/[0.06] px-3 py-2 text-xs text-teal-200/90 space-y-0.5">
+            <p className="uppercase tracking-widest text-teal-300/70">Etsy order</p>
+            <p>Receipt #{order.etsy_receipt_id}</p>
+            <p>Buyer: {order.etsy_buyer_username}</p>
+            <a
+              href={`https://www.etsy.com/your/orders/sold/${order.etsy_receipt_id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-teal-300 underline underline-offset-2"
+            >
+              Open on Etsy ↗
+            </a>
+          </div>
+        )}
       </section>
 
       <section className="mt-6">
-        <label className="block text-sm text-white/60 mb-1.5">
-          Card you drew (Osho Zen)
-        </label>
-        <select
-          value={card}
-          disabled={finalized}
-          onChange={(e) => setCard(e.target.value)}
-          className="w-full rounded-xl border border-white/10 bg-[#1b1730] px-4 py-3 outline-none focus:border-violet-400/60 disabled:opacity-60"
-        >
-          <option value="">— pick the card —</option>
-          {suits.map(([suit, names]) => (
-            <optgroup key={suit} label={suit}>
-              {names.map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </optgroup>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-white/60">Cards in this reading:</span>
+          <div className="inline-flex rounded-full border border-white/15 p-0.5">
+            {[1, 2, 3].map((n) => (
+              <button
+                key={n}
+                type="button"
+                disabled={finalized}
+                onClick={() => setCount(n)}
+                className={`rounded-full px-4 py-1 text-sm transition ${
+                  count === n
+                    ? "bg-violet-500 text-white"
+                    : "text-white/60 hover:text-white"
+                } disabled:opacity-60`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-white/35">order of cards is preserved</span>
+        </div>
+        <div className="mt-3 grid gap-3">
+          {Array.from({ length: count }, (_, i) => (
+            <CardSlot
+              key={i}
+              index={i}
+              value={slots[i]}
+              disabled={finalized}
+              onPick={(card) =>
+                setSlots((s) => s.map((v, j) => (j === i ? card : v)))
+              }
+            />
           ))}
-        </select>
+        </div>
       </section>
 
       {latestReading && (
@@ -218,11 +328,11 @@ export default function Workroom({
           <div className="flex gap-3">
             <button
               onClick={generate}
-              disabled={busy !== ""}
+              disabled={busy !== "" || !allPicked}
               className="flex-1 rounded-xl border border-violet-400/50 py-3 font-medium hover:bg-violet-400/10 disabled:opacity-50"
             >
               {busy === "generate"
-                ? "Writing…"
+                ? `Writing (${pickedCards.length}-card chain)…`
                 : latestReading
                   ? "Regenerate"
                   : "Generate reading"}

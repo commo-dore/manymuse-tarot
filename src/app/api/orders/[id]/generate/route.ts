@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/supabase";
 import { isOperator } from "@/lib/auth";
 import { generateReading } from "@/lib/reading";
+import { OSHO_ZEN_CARDS } from "@/lib/cards";
+
+export const maxDuration = 300;
+
+const VALID_CARDS = new Set(OSHO_ZEN_CARDS.map((c) => c.name));
 
 export async function POST(
   req: Request,
@@ -12,7 +17,6 @@ export async function POST(
 
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
-  const cardName: string | undefined = body?.card_name;
   const comments: string = body?.comments ?? "";
 
   const supabase = db();
@@ -26,13 +30,20 @@ export async function POST(
   if (order.status === "approved" || order.status === "sent")
     return NextResponse.json({ error: "Order already approved" }, { status: 400 });
 
-  const card = cardName ?? order.card_name;
-  if (!card)
-    return NextResponse.json({ error: "Pick a card first" }, { status: 400 });
-  if (card !== order.card_name)
-    await supabase.from("orders").update({ card_name: card }).eq("id", id);
+  // Cards: slot order is meaningful and preserved as given.
+  const cards: string[] = Array.isArray(body?.cards)
+    ? body.cards.filter(Boolean)
+    : (order.cards as string[]) ?? [];
+  if (cards.length < 1 || cards.length > 3)
+    return NextResponse.json({ error: "Pick 1 to 3 cards first" }, { status: 400 });
+  const invalid = cards.find((c) => !VALID_CARDS.has(c));
+  if (invalid)
+    return NextResponse.json({ error: `Unknown card: ${invalid}` }, { status: 400 });
+  await supabase
+    .from("orders")
+    .update({ cards, card_name: cards[0] })
+    .eq("id", id);
 
-  // latest draft (for regeneration)
   const { data: drafts } = await supabase
     .from("readings")
     .select("version, content")
@@ -41,10 +52,9 @@ export async function POST(
     .limit(1);
   const latest = drafts?.[0];
 
-  // repeat-customer history: previous orders + their latest readings
   const { data: pastOrders } = await supabase
     .from("orders")
-    .select("id, customer_message, card_name, placed_at, readings(content, version)")
+    .select("id, customer_message, cards, card_name, placed_at, readings(content, version)")
     .eq("customer_id", order.customer_id)
     .neq("id", id)
     .order("placed_at", { ascending: false })
@@ -53,18 +63,24 @@ export async function POST(
   const history = (pastOrders ?? []).map((o) => {
     const readings = (o.readings ?? []) as { content: string; version: number }[];
     const last = readings.sort((a, b) => b.version - a.version)[0];
+    const pastCards =
+      ((o.cards as string[]) ?? []).length > 0
+        ? (o.cards as string[])
+        : o.card_name
+          ? [o.card_name]
+          : [];
     return {
       message: o.customer_message,
-      card: o.card_name,
+      cards: pastCards,
       reading: last?.content ?? null,
       date: new Date(o.placed_at).toDateString(),
     };
   });
 
-  const content = await generateReading({
+  const { final, chain } = await generateReading({
     customerName: order.customers.display_name ?? order.customers.etsy_username,
     customerMessage: order.customer_message,
-    cardName: card,
+    cards,
     operatorComments: comments,
     previousDraft: latest?.content,
     history,
@@ -75,11 +91,11 @@ export async function POST(
   const { error } = await supabase.from("readings").insert({
     order_id: id,
     version,
-    content,
+    content: final,
     operator_comments: comments,
   });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   await supabase.from("orders").update({ status: "draft" }).eq("id", id);
 
-  return NextResponse.json({ ok: true, content, version });
+  return NextResponse.json({ ok: true, content: final, version, chain });
 }

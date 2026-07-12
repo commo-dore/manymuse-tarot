@@ -23,7 +23,7 @@ export default async function OrderPage({
 
   const { data: pastOrders } = await supabase
     .from("orders")
-    .select("id, customer_message, card_name, placed_at, status")
+    .select("id, customer_message, cards, card_name, placed_at, status")
     .eq("customer_id", order.customer_id)
     .neq("id", id)
     .order("placed_at", { ascending: false });
@@ -38,9 +38,17 @@ export default async function OrderPage({
         id: order.id,
         status: order.status,
         placed_at: order.placed_at,
-        card_name: order.card_name,
+        cards:
+          ((order.cards as string[]) ?? []).length > 0
+            ? (order.cards as string[])
+            : order.card_name
+              ? [order.card_name]
+              : [],
         customer_message: order.customer_message,
         order_ref: order.order_ref,
+        source: order.source ?? "manual",
+        etsy_receipt_id: order.etsy_receipt_id,
+        etsy_buyer_username: order.etsy_buyer_username,
       }}
       customer={{
         etsy_username: order.customers.etsy_username,
@@ -49,7 +57,18 @@ export default async function OrderPage({
       }}
       latestReading={readings[0] ?? null}
       versions={readings.length}
-      pastOrders={pastOrders ?? []}
+      pastOrders={(pastOrders ?? []).map((p) => ({
+        id: p.id,
+        customer_message: p.customer_message,
+        cards:
+          ((p.cards as string[]) ?? []).length > 0
+            ? (p.cards as string[])
+            : p.card_name
+              ? [p.card_name]
+              : [],
+        placed_at: p.placed_at,
+        status: p.status,
+      }))}
     />
   );
 }

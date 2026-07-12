@@ -18,7 +18,7 @@ export default async function Dashboard() {
   const supabase = db();
   const { data: orders } = await supabase
     .from("orders")
-    .select("id, customer_id, status, placed_at, card_name, customer_message, customers(etsy_username, display_name)")
+    .select("id, customer_id, status, placed_at, cards, card_name, source, customer_message, customers(etsy_username, display_name)")
     .order("placed_at", { ascending: false })
     .limit(100);
 
@@ -31,9 +31,14 @@ export default async function Dashboard() {
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-12">
-      <h1 className="font-[family-name:var(--font-serif)] text-3xl">
-        Reading queue
-      </h1>
+      <div className="flex items-center justify-between">
+        <h1 className="font-[family-name:var(--font-serif)] text-3xl">
+          Reading queue
+        </h1>
+        <Link href="/operator/settings" className="text-sm text-violet-300/80 hover:text-violet-200">
+          Etsy settings →
+        </Link>
+      </div>
       <div className="mt-8 space-y-3">
         {(orders ?? []).map((o) => {
           const customer = o.customers as unknown as {
@@ -63,6 +68,11 @@ export default async function Dashboard() {
                   )}
                 </div>
                 <div className="flex items-center gap-2 text-xs">
+                  {o.source === "etsy" && (
+                    <span className="rounded-full bg-teal-400/15 text-teal-300 px-2 py-0.5">
+                      etsy
+                    </span>
+                  )}
                   {held && (
                     <span className="rounded-full bg-sky-400/15 text-sky-300 px-2 py-0.5">
                       30-min hold
@@ -78,7 +88,7 @@ export default async function Dashboard() {
               </p>
               <p className="mt-2 text-xs text-white/40">
                 {new Date(o.placed_at).toLocaleString()} ·{" "}
-                {o.card_name ? `Card: ${o.card_name}` : "No card yet"}
+                {(o.cards as string[])?.length ? `Cards: ${(o.cards as string[]).join(" → ")}` : o.card_name ? `Card: ${o.card_name}` : "No cards yet"}
               </p>
             </Link>
           );
