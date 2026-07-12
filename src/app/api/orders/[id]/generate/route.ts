@@ -103,9 +103,15 @@ export async function POST(
     personaNotes,
   };
 
+  const { data: settings } = await supabase
+    .from("persona_settings")
+    .select("instructions")
+    .eq("id", 1)
+    .maybeSingle();
+
   let system: string;
   try {
-    system = persona(personaNotes);
+    system = persona(personaNotes, settings?.instructions ?? "");
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }

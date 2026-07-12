@@ -35,9 +35,14 @@ export default async function Dashboard() {
         <h1 className="font-[family-name:var(--font-serif)] text-3xl">
           Reading queue
         </h1>
-        <Link href="/operator/settings" className="text-sm text-violet-300/80 hover:text-violet-200">
-          Etsy settings →
-        </Link>
+        <div className="flex gap-4 text-sm">
+          <Link href="/operator/persona" className="text-violet-300/80 hover:text-violet-200">
+            Persona studio →
+          </Link>
+          <Link href="/operator/settings" className="text-violet-300/80 hover:text-violet-200">
+            Etsy settings →
+          </Link>
+        </div>
       </div>
       <div className="mt-8 space-y-3">
         {(orders ?? []).map((o) => {

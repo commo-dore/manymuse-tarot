@@ -19,7 +19,7 @@ export type ReadingInput = {
   personaNotes?: string; // per-reading voice/instruction adjustments
 };
 
-export function persona(personaNotes?: string): string {
+export function persona(personaNotes?: string, globalInstructions?: string): string {
   // The reader persona is deliberately NOT in the codebase (public repo).
   // It lives in the READER_PERSONA_B64 env var (base64 of the system prompt).
   const b64 = process.env.READER_PERSONA_B64;
@@ -29,6 +29,9 @@ export function persona(personaNotes?: string): string {
     );
   }
   let system = Buffer.from(b64, "base64").toString("utf-8");
+  if (globalInstructions?.trim()) {
+    system += `\n\nStanding instructions from the reader (trained in the persona studio — always apply):\n${globalInstructions.trim()}`;
+  }
   if (personaNotes?.trim()) {
     system += `\n\nThe reader has given these additional voice/tone instructions for THIS reading — they take priority over the defaults above where they conflict:\n${personaNotes.trim()}`;
   }
@@ -131,10 +134,11 @@ export async function llm(
 export function llmStream(opts: {
   system: string;
   prompt: string;
+  model?: string;
   onFinish: (finalText: string) => Promise<void>;
 }) {
   return streamText({
-    model: anthropic(READING_MODEL),
+    model: anthropic(opts.model ?? READING_MODEL),
     system: opts.system,
     prompt: opts.prompt,
     temperature: 0.9,

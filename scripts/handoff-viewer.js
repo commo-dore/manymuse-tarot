@@ -390,7 +390,6 @@ a { color: #0a66c2; }
 .chat-options { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.35rem 0; }
 .chat-option { padding: 0.4rem 0.7rem; border: 1px solid #1c1c1c; border-radius: 999px; background: #fff; font-size: 0.85rem; cursor: pointer; }
 .chat-option:hover { background: #1c1c1c; color: #fff; }
-.chat-option.selected { background: #1565c0; border-color: #1565c0; color: #fff; }
 .chat-pills-wrap { border: 1px solid #d0d7e2; border-radius: 6px; padding: 0.55rem 0.7rem; background: #f4f7fb; }
 .chat-pills-label { font-size: 0.72rem; color: #5a6470; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; }
 .chat-pills { display: flex; flex-wrap: wrap; gap: 0.35rem; }
@@ -566,7 +565,7 @@ function handoffPage(h) {
           <div class="chat-pills-label">Selected answers (tap × to clear, tap a different chip above to swap):</div>
           <div class="chat-pills" id="chat-pills"></div>
         </div>
-        <textarea class="chat-input" id="chat-input" placeholder="Tap an answer pill to pre-fill, edit as needed, then Send."></textarea>
+        <textarea class="chat-input" id="chat-input" placeholder="Free-text notes for Captain (optional). Tap chips above to select answers — they appear as pills."></textarea>
         <div class="chat-actions">
           <button type="button" class="send" id="chat-send">📨 Send</button>
           <button type="button" class="generate" id="chat-generate">🎯 Generate final prompt</button>
@@ -779,35 +778,14 @@ function handoffPage(h) {
             c.addEventListener('click', function () {
               var opt = c.getAttribute('data-opt') || c.textContent
               var question = c.getAttribute('data-question') || ''
-              // Pill pre-fill behavior (2026-07-12): tapping a pill
-              // pre-fills the textarea with the answer — it does NOT
-              // send. Single-select per question: tapping a different
-              // pill for the same question swaps the previously inserted
-              // answer in place; anything the operator typed around it is
-              // preserved. Tapping the selected pill again deselects it.
-              var prev = chipMap[question] || null
-              var val = chatInput.value
-              if (prev === opt) {
-                // deselect: remove the inserted answer
-                delete chipMap[question]
-                if (val.indexOf(opt) !== -1) chatInput.value = (val.replace(opt, '')).replace(/^\\n+/, '').replace(/\\n{3,}/g, '\\n\\n').trim()
-              } else {
-                chipMap[question] = opt
-                if (prev && val.indexOf(prev) !== -1) {
-                  chatInput.value = val.replace(prev, opt)
-                } else if (val.trim() === '') {
-                  chatInput.value = opt
-                } else {
-                  chatInput.value = opt + '\\n\\n' + val
-                }
-              }
-              // reflect selection state on the chips for this question
-              chatThread.querySelectorAll('.chat-option').forEach(function (b) {
-                if ((b.getAttribute('data-question') || '') === question) {
-                  b.classList.toggle('selected', (b.getAttribute('data-opt') || b.textContent) === chipMap[question])
-                }
-              })
-              chatInput.focus()
+              // Pills-above-textarea behavior (sproushi-ops parity):
+              //   - chipMap stores the selected answer per question
+              //   - Tapping a different chip for the SAME question just
+              //     replaces the pill (radio-button)
+              //   - Tapping × on a pill clears that question's answer
+              //   - Textarea stays free-text-only; chip taps never touch it
+              chipMap[question] = opt
+              renderPills()
             })
           })
           // Scroll latest into view
@@ -818,8 +796,6 @@ function handoffPage(h) {
         // Empty → hide the whole strip. × button on each pill deletes
         // its question entry.
         function renderPills() {
-          // Pills strip retired (answers pre-fill the textarea instead).
-          return;
           var wrap = document.getElementById('chat-pills-wrap')
           var pills = document.getElementById('chat-pills')
           var keys = Object.keys(chipMap)
@@ -856,8 +832,11 @@ function handoffPage(h) {
         // body Captain sees. Pills go first (one per line), then a blank
         // line, then free-text notes. Either may be empty.
         function buildOutgoingMessage() {
-          // Pills pre-fill the textarea; the textarea IS the message.
-          return (chatInput.value || '').trim()
+          var picks = Object.values(chipMap).filter(function (v) { return v && v.trim() })
+          var notes = (chatInput.value || '').trim()
+          if (picks.length === 0) return notes
+          if (!notes) return picks.join('\\n')
+          return picks.join('\\n') + '\\n\\n' + notes
         }
 
         function setBusy(busy, msg) {
